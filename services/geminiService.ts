@@ -49,8 +49,9 @@ const parseMarkdownTableToLeads = (markdown: string, city: string): Lead[] => {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|')) continue;
 
-    // Check if it's a separator line (e.g., |---|---|)
-    if (trimmed.match(/^\|[\s-]+\|/)) {
+    // Check if it's a separator line (e.g., |---|---| or |:---|)
+    // Improved regex to handle colons and various spacing
+    if (/^\|[\s-:|]+\|$/.test(trimmed) || trimmed.includes('---')) {
       separatorFound = true;
       continue;
     }
@@ -62,8 +63,17 @@ const parseMarkdownTableToLeads = (markdown: string, city: string): Lead[] => {
     }
 
     if (headersFound && separatorFound) {
-      // This is a data row
-      const cells = trimmed.split('|').map(c => c.trim()).filter(c => c !== '');
+      // This is a data row. 
+      // We split by '|' and strictly trim. We DO NOT filter empty strings immediately
+      // because an empty column (like missing website) needs to be preserved to maintain index alignment.
+      const rawCells = trimmed.split('|');
+      
+      // Remove the first and last elements if they are empty strings caused by leading/trailing pipes
+      // e.g. "| A | B |" -> ["", " A ", " B ", ""] -> [" A ", " B "]
+      if (rawCells.length > 0 && rawCells[0].trim() === '') rawCells.shift();
+      if (rawCells.length > 0 && rawCells[rawCells.length - 1].trim() === '') rawCells.pop();
+
+      const cells = rawCells.map(c => c.trim());
       
       // We expect at least 3 columns to be useful
       if (cells.length >= 3) {
