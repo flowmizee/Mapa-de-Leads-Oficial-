@@ -1,140 +1,30 @@
-import { GoogleGenAI } from "@google/genai";
 import { Lead } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 /**
- * Formats phone numbers to the pattern +55 XX XXXXX-XXXX
+ * Fetches leads by calling the serverless API endpoint.
  */
-const formatPhoneNumber = (phone: string): string => {
-  if (!phone || phone.toUpperCase().includes('N/A')) return 'N/A';
-  
-  // Remove all non-numeric characters
-  let cleaned = phone.replace(/\D/g, '');
-
-  // If empty after cleaning or too short, return original
-  if (cleaned.length < 8) return phone;
-
-  // Handle existing country code 55 (Brazil)
-  // If it starts with 55 and is 12 or 13 digits long, strip it temporarily to normalize
-  if (cleaned.startsWith('55') && (cleaned.length === 12 || cleaned.length === 13)) {
-    cleaned = cleaned.substring(2);
-  }
-
-  // Standardize Brazil Mobile (11 digits: DD + 9 + XXXX + XXXX)
-  if (cleaned.length === 11) {
-    return `+55 ${cleaned.substring(0, 2)} ${cleaned.substring(2, 7)}-${cleaned.substring(7)}`;
-  }
-
-  // Standardize Brazil Landline (10 digits: DD + XXXX + XXXX)
-  if (cleaned.length === 10) {
-    return `+55 ${cleaned.substring(0, 2)} ${cleaned.substring(2, 6)}-${cleaned.substring(6)}`;
-  }
-  
-  return phone;
-};
-
-/**
- * Parses a Markdown table string into an array of Lead objects.
- * Expects columns roughly in the order: Name, Address, Phone, Website, Rating.
- */
-const parseMarkdownTableToLeads = (markdown: string, city: string): Lead[] => {
-  const lines = markdown.split('\n');
-  const leads: Lead[] = [];
-  
-  let headersFound = false;
-  let separatorFound = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('|')) continue;
-
-    // Check if it's a separator line (e.g., |---|---| or |:---|)
-    // Improved regex to handle colons and various spacing
-    if (/^\|[\s-:|]+\|$/.test(trimmed) || trimmed.includes('---')) {
-      separatorFound = true;
-      continue;
-    }
-
-    // Assume first pipe-starting line is header if we haven't seen separator
-    if (!headersFound && !separatorFound) {
-      headersFound = true;
-      continue;
-    }
-
-    if (headersFound && separatorFound) {
-      // This is a data row. 
-      // We split by '|' and strictly trim. We DO NOT filter empty strings immediately
-      // because an empty column (like missing website) needs to be preserved to maintain index alignment.
-      const rawCells = trimmed.split('|');
-      
-      // Remove the first and last elements if they are empty strings caused by leading/trailing pipes
-      // e.g. "| A | B |" -> ["", " A ", " B ", ""] -> [" A ", " B "]
-      if (rawCells.length > 0 && rawCells[0].trim() === '') rawCells.shift();
-      if (rawCells.length > 0 && rawCells[rawCells.length - 1].trim() === '') rawCells.pop();
-
-      const cells = rawCells.map(c => c.trim());
-      
-      // We expect at least 3 columns to be useful
-      if (cells.length >= 3) {
-        leads.push({
-          id: crypto.randomUUID(),
-          city: city,
-          name: cells[0] || 'N/A',
-          address: cells[1] || 'N/A',
-          phone: formatPhoneNumber(cells[2] || 'N/A'),
-          website: cells[3] || 'N/A',
-          rating: cells[4] || 'N/A',
-        });
-      }
-    }
-  }
-  return leads;
-};
-
 export const fetchLeadsForCity = async (segment: string, city: string): Promise<Lead[]> => {
   try {
-    // Engineered prompt to maximize results and force exhaustive search
-    const prompt = `
-      Act as an expert Data Miner and Lead Extractor.
-      
-      TASK: Perform an EXHAUSTIVE search for "${segment}" in the city of "${city}" using Google Maps.
-      
-      CRITICAL INSTRUCTIONS FOR QUANTITY:
-      1. **IGNORE DEFAULT LIMITS**: Your goal is to find *every single* establishment. Do NOT stop at 5 or 10. Aim for 30+ results if they exist.
-      2. **EXPAND QUERY**: Automatically include related terms in your search to find more results. (e.g., if searching "Lanchonete", also search for "Hamburgueria", "Pastelaria", "Food Truck", "Sanduiche", "Restaurante popular").
-      3. **SMALL CITIES**: In small cities like "${city}", you must be extremely thorough and find literally everything available.
-      
-      OUTPUT FORMAT:
-      Return ONLY a Markdown table. No intro. No outro.
-      
-      Table Columns:
-      | Name | Address | Phone | Website | Rating |
-
-      Row Rules:
-      - Name: The full name.
-      - Address: The specific address.
-      - Phone: The contact number. **MUST** be formatted strictly as "+55 XX XXXXX-XXXX". Write "N/A" if absolutely not found.
-      - Website: Social media or website. Write "N/A" if none.
-      - Rating: Numeric rating (e.g., 4.5).
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        tools: [{ googleMaps: {} }],
-      }
+    const params = new URLSearchParams({
+      segment,
+      city
     });
 
-    const text = response.text || '';
-    
-    if (!text) {
-        console.warn(`No text returned for ${city}`);
-        return [];
+    // Calls the Vercel/Next.js serverless function
+    const response = await fetch(`/api/fetchLeads?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Erro na requisição: ${response.statusText}`);
     }
 
-    return parseMarkdownTableToLeads(text, city);
+    const leads: Lead[] = await response.json();
+    return leads;
 
   } catch (error) {
     console.error(`Error fetching leads for ${city}:`, error);
